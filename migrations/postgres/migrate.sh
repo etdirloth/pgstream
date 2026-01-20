@@ -10,6 +10,7 @@ PG_DBNAME=
 PG_USERNAME=
 SKIP_TESTS=false
 IS_QUIET=false
+TEST_ONLY=false
 
 HELP_TEXT="Execute PostgreSQL migration scripts in sequential order.
 
@@ -19,6 +20,7 @@ Options:
   -h, --help              Show this help text and exit
   -u, --up [NUM]          Migrate up NUM versions (default: $NUMBER, accepts 'all')
   -d, --down [NUM]        Migrate down NUM versions (default: $NUMBER, accepts 'all')
+  -t, --test              Run test script for current database version and exit
   -H, --host HOST         PostgreSQL host
   -p, --port PORT         PostgreSQL port
   -D, --dbname DBNAME     PostgreSQL database name
@@ -28,7 +30,7 @@ Options:
 "
 
 # Parse command-line options
-TEMP=$(getopt -o hu::d::H:p:D:U:sq --long help,up::,down::,host:,port:,dbname:,username:,skip-tests,quiet -n "$(basename "$0")" -- "$@")
+TEMP=$(getopt -o hu::d::tH:p:D:U:sq --long help,up::,down::,test,host:,port:,dbname:,username:,skip-tests,quiet -n "$(basename "$0")" -- "$@")
 if [ $? != 0 ] ; then echo "Terminating..." >&2 ; exit 1 ; fi
 eval set -- "$TEMP"
 
@@ -47,6 +49,7 @@ while true; do
             NUMBER="$2"
          fi
          shift 2 ;;
+      -t | --test )        TEST_ONLY=true; shift ;;
       -H | --host )        PG_HOST="$2"; shift 2 ;;
       -p | --port )        PG_PORT="$2"; shift 2 ;;
       -D | --dbname )      PG_DBNAME="$2"; shift 2 ;;
@@ -182,6 +185,39 @@ get_version_state() {
 
 # Get initial version state
 get_version_state
+
+# If test-only mode, run test script for current version and exit
+if $TEST_ONLY; then
+   if [ $CURRENT_VERSION -lt 0 ]; then
+      echo "Error: No migrations applied yet (version: $CURRENT_VERSION)" >&2
+      exit 1
+   fi
+
+   # Look for test file matching current version (both padded and non-padded)
+   PADDED_VERSION=$(printf "%02d" $CURRENT_VERSION)
+   TEST_FILES=($(ls -1 ${CURRENT_VERSION}_*.test.sql ${PADDED_VERSION}_*.test.sql 2>/dev/null | head -1))
+
+   if [ ${#TEST_FILES[@]} -eq 0 ]; then
+      echo "No test file found for version $CURRENT_VERSION" >&2
+      exit 1
+   fi
+
+   TEST_FILE_PATH="${TEST_FILES[0]}"
+   if ! $IS_QUIET; then
+      echo "Executing test: $TEST_FILE_PATH"
+   fi
+
+   $DB_CMD -f "$TEST_FILE_PATH" -v ON_ERROR_STOP=1
+   if [ $? -ne 0 ]; then
+      echo "Error: Test failed: $TEST_FILE_PATH" >&2
+      exit 1
+   fi
+
+   if ! $IS_QUIET; then
+      echo "Test passed successfully"
+   fi
+   exit 0
+fi
 
 # If no direction specified, just show version and exit
 if [ -z "$DIRECTION" ]; then
